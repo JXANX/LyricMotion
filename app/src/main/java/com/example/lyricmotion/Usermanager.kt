@@ -1,4 +1,4 @@
-package com.example.lyricmotion
+package com.lyricmotion
 
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -8,49 +8,37 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
-// ── Instancia única de DataStore para usuarios ───────────────────
 val Context.userDataStore by preferencesDataStore(name = "lyricmotion_users")
 
-/**
- * Modelo de datos del usuario.
- * Se serializa a JSON con Gson para guardarlo en DataStore.
- */
 data class User(
     val id: String,
     val name: String,
     val email: String,
-    val password: String   // En producción real se usaría hash, aquí es prototipo
+    val password: String
 )
 
-/**
- * UserManager — única clase responsable del almacenamiento de usuarios y sesión.
- *
- * Persiste:
- *  - Lista de usuarios registrados (JSON)
- *  - Usuario actualmente logueado (email)
- *  - Estado de sesión activa (booleano)
- */
 class UserManager(private val context: Context) {
 
     private val gson = Gson()
 
     companion object {
-        val USERS_KEY          = stringPreferencesKey("users_list")
-        val LOGGED_USER_KEY    = stringPreferencesKey("logged_user_email")
-        val IS_LOGGED_IN_KEY   = booleanPreferencesKey("is_logged_in")
+        val USERS_KEY        = stringPreferencesKey("users_list")
+        val LOGGED_USER_KEY  = stringPreferencesKey("logged_user_email")
+        val IS_LOGGED_IN_KEY = booleanPreferencesKey("is_logged_in")
+
+        // Clave dinámica de canciones guardadas por usuario (email como parte de la clave)
+        fun savedSongsKey(email: String) = stringPreferencesKey("saved_songs_$email")
     }
 
-    // ── Guardar lista de usuarios ────────────────────────────────
+    // ── Usuarios ─────────────────────────────────────────────────
+
     suspend fun saveUsers(users: List<User>) {
-        val json = gson.toJson(users)
-        context.userDataStore.edit { prefs ->
-            prefs[USERS_KEY] = json
-        }
+        context.userDataStore.edit { it[USERS_KEY] = gson.toJson(users) }
     }
 
-    // ── Leer lista de usuarios (Flow reactivo) ───────────────────
     val getUsers: Flow<List<User>> = context.userDataStore.data.map { prefs ->
         val json = prefs[USERS_KEY] ?: ""
         if (json.isEmpty()) emptyList()
@@ -60,15 +48,12 @@ class UserManager(private val context: Context) {
         }
     }
 
-    // ── Registrar un nuevo usuario ───────────────────────────────
     suspend fun registerUser(currentUsers: List<User>, newUser: User): Boolean {
-        // Verificar que el email no exista ya
         if (currentUsers.any { it.email == newUser.email }) return false
         saveUsers(currentUsers + newUser)
         return true
     }
 
-    // ── Iniciar sesión ───────────────────────────────────────────
     suspend fun loginUser(users: List<User>, email: String, password: String): User? {
         val user = users.find { it.email == email && it.password == password }
         if (user != null) {
@@ -80,7 +65,6 @@ class UserManager(private val context: Context) {
         return user
     }
 
-    // ── Cerrar sesión ────────────────────────────────────────────
     suspend fun logout() {
         context.userDataStore.edit { prefs ->
             prefs[LOGGED_USER_KEY]  = ""
@@ -88,13 +72,55 @@ class UserManager(private val context: Context) {
         }
     }
 
-    // ── ¿Hay sesión activa? (Flow reactivo) ─────────────────────
     val isLoggedIn: Flow<Boolean> = context.userDataStore.data.map { prefs ->
         prefs[IS_LOGGED_IN_KEY] ?: false
     }
 
-    // ── Email del usuario logueado (Flow reactivo) ───────────────
     val loggedUserEmail: Flow<String> = context.userDataStore.data.map { prefs ->
         prefs[LOGGED_USER_KEY] ?: ""
     }
+
+    // ── Canciones Guardadas (por usuario) ────────────────────────
+
+    fun getSavedSongIds(email: String): Flow<List<String>> =
+        context.userDataStore.data.map { prefs ->
+            val json = prefs[savedSongsKey(email)] ?: ""
+            if (json.isEmpty()) emptyList()
+            else {
+                val type = object : TypeToken<List<String>>() {}.type
+                gson.fromJson(json, type)
+            }
+        }
+
+    suspend fun saveSongForUser(email: String, songId: String) {
+        context.userDataStore.edit { prefs ->
+            val key  = savedSongsKey(email)
+            val json = prefs[key] ?: ""
+            val current: MutableList<String> = if (json.isEmpty()) mutableListOf()
+            else {
+                val type = object : TypeToken<List<String>>() {}.type
+                gson.fromJson<List<String>>(json, type).toMutableList()
+            }
+            if (!current.contains(songId)) {
+                current.add(songId)
+                prefs[key] = gson.toJson(current)
+            }
+        }
+    }
+
+    suspend fun removeSongForUser(email: String, songId: String) {
+        context.userDataStore.edit { prefs ->
+            val key  = savedSongsKey(email)
+            val json = prefs[key] ?: ""
+            if (json.isEmpty()) return@edit
+            val type = object : TypeToken<List<String>>() {}.type
+            val current: MutableList<String> = gson.fromJson<List<String>>(json, type).toMutableList()
+            current.remove(songId)
+            prefs[key] = gson.toJson(current)
+        }
+    }
+
+    // Obtener email del usuario actual de forma suspendida (para Workers)
+    suspend fun getCurrentEmail(): String =
+        context.userDataStore.data.map { it[LOGGED_USER_KEY] ?: "" }.first()
 }

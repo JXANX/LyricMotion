@@ -1,13 +1,13 @@
-package com.example.lyricmotion
+package com.lyricmotion
 
 sealed class Screen(val route: String) {
-    object Welcome : Screen("welcome")
-    object Login   : Screen("login")
-    object Register: Screen("register")
-    object Home     : Screen("home")
-    object Saved    : Screen("saved")
-    object Settings : Screen("settings")
-    object LyricsViewer : Screen("lyrics/{songId}") {
+    data object Welcome : Screen("welcome")
+    data object Login   : Screen("login")
+    data object Register: Screen("register")
+    data object Home     : Screen("home")
+    data object Saved    : Screen("saved")
+    data object Settings : Screen("settings")
+    data object LyricsViewer : Screen("lyrics/{songId}") {
         const val ARG_SONG_ID = "songId"
         fun createRoute(songId: String) = "lyrics/$songId"
     }

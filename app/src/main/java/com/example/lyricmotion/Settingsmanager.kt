@@ -1,4 +1,4 @@
-package com.example.lyricmotion
+package com.lyricmotion
 
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -9,83 +9,47 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
-// ── Instancia única de DataStore para ajustes ────────────────────
 val Context.settingsDataStore by preferencesDataStore(name = "lyricmotion_settings")
 
-/**
- * Modelo de datos de las preferencias del usuario.
- * Se usa para pasar el estado completo a la UI de una vez.
- */
 data class AppSettings(
-    val defaultStyleIndex: Int     = 0,     // 0=Fade, 1=Neon, 2=Karaoke
-    val fontSize:          Float   = 16f,   // sp
-    val animationSpeed:    Float   = 1f,    // multiplicador
+    val defaultStyleIndex: Int     = 0,
+    val fontSize:          Float   = 16f,
+    val animationSpeed:    Float   = 1f,
     val autoPlay:          Boolean = true
 )
 
-/**
- * SettingsManager — única clase responsable de las preferencias de ajustes.
- *
- * Persiste:
- *  - Estilo de visualización predeterminado
- *  - Tamaño de fuente
- *  - Velocidad de animación
- *  - Reproducción automática
- */
 class SettingsManager(private val context: Context) {
 
     companion object {
-        val DEFAULT_STYLE_KEY   = intPreferencesKey("default_style")
-        val FONT_SIZE_KEY       = floatPreferencesKey("font_size")
-        val ANIMATION_SPEED_KEY = floatPreferencesKey("animation_speed")
-        val AUTO_PLAY_KEY       = booleanPreferencesKey("auto_play")
+        fun styleKey(email: String)     = intPreferencesKey("default_style_$email")
+        fun fontSizeKey(email: String)  = floatPreferencesKey("font_size_$email")
+        fun animSpeedKey(email: String) = floatPreferencesKey("animation_speed_$email")
+        fun autoPlayKey(email: String)  = booleanPreferencesKey("auto_play_$email")
     }
 
-    // ── Leer ajustes completos (Flow reactivo) ───────────────────
-    val getSettings: Flow<AppSettings> = context.settingsDataStore.data.map { prefs ->
-        AppSettings(
-            defaultStyleIndex = prefs[DEFAULT_STYLE_KEY]   ?: 0,
-            fontSize          = prefs[FONT_SIZE_KEY]       ?: 16f,
-            animationSpeed    = prefs[ANIMATION_SPEED_KEY] ?: 1f,
-            autoPlay          = prefs[AUTO_PLAY_KEY]       ?: true
-        )
-    }
-
-    // ── Guardar estilo predeterminado ────────────────────────────
-    suspend fun saveDefaultStyle(index: Int) {
-        context.settingsDataStore.edit { prefs ->
-            prefs[DEFAULT_STYLE_KEY] = index
+    fun getSettingsForUser(email: String): Flow<AppSettings> =
+        context.settingsDataStore.data.map { prefs ->
+            AppSettings(
+                defaultStyleIndex = prefs[styleKey(email)]     ?: 0,
+                fontSize          = prefs[fontSizeKey(email)]  ?: 16f,
+                animationSpeed    = prefs[animSpeedKey(email)] ?: 1f,
+                autoPlay          = prefs[autoPlayKey(email)]  ?: true
+            )
         }
+
+    suspend fun saveDefaultStyle(email: String, index: Int) {
+        context.settingsDataStore.edit { it[styleKey(email)] = index }
     }
 
-    // ── Guardar tamaño de fuente ─────────────────────────────────
-    suspend fun saveFontSize(size: Float) {
-        context.settingsDataStore.edit { prefs ->
-            prefs[FONT_SIZE_KEY] = size
-        }
+    suspend fun saveFontSize(email: String, size: Float) {
+        context.settingsDataStore.edit { it[fontSizeKey(email)] = size }
     }
 
-    // ── Guardar velocidad de animación ───────────────────────────
-    suspend fun saveAnimationSpeed(speed: Float) {
-        context.settingsDataStore.edit { prefs ->
-            prefs[ANIMATION_SPEED_KEY] = speed
-        }
+    suspend fun saveAnimationSpeed(email: String, speed: Float) {
+        context.settingsDataStore.edit { it[animSpeedKey(email)] = speed }
     }
 
-    // ── Guardar autoplay ─────────────────────────────────────────
-    suspend fun saveAutoPlay(enabled: Boolean) {
-        context.settingsDataStore.edit { prefs ->
-            prefs[AUTO_PLAY_KEY] = enabled
-        }
-    }
-
-    // ── Guardar todos los ajustes de una vez ─────────────────────
-    suspend fun saveAllSettings(settings: AppSettings) {
-        context.settingsDataStore.edit { prefs ->
-            prefs[DEFAULT_STYLE_KEY]   = settings.defaultStyleIndex
-            prefs[FONT_SIZE_KEY]       = settings.fontSize
-            prefs[ANIMATION_SPEED_KEY] = settings.animationSpeed
-            prefs[AUTO_PLAY_KEY]       = settings.autoPlay
-        }
+    suspend fun saveAutoPlay(email: String, enabled: Boolean) {
+        context.settingsDataStore.edit { it[autoPlayKey(email)] = enabled }
     }
 }
