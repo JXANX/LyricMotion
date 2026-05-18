@@ -1,4 +1,3 @@
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -12,7 +11,7 @@ android {
 
     defaultConfig {
         applicationId = "com.lyricmotion"
-        minSdk = 26
+        minSdk = 30   // ← CAMBIADO de 26 a 30
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
@@ -45,12 +44,10 @@ kotlin {
 }
 
 dependencies {
-
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.activity:activity-compose:1.9.3")
 
-    // Compose BOM
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
@@ -74,7 +71,6 @@ dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
 
-    // WorkManager para notificaciones periódicas
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     testImplementation("junit:junit:4.13.2")

@@ -1,8 +1,8 @@
 package com.lyricmotion
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -54,6 +54,7 @@ import androidx.navigation.navArgument
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.lyricmotion.ui.theme.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -68,23 +69,40 @@ class MainActivity : ComponentActivity() {
     private val requestPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
+    // songId pendiente de navegar (viene de notificación)
+    private var pendingSongId: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+
+        // Captura el songId si viene del Intent de notificación
+        pendingSongId = intent?.getStringExtra(LyricsService.EXTRA_SONG_ID)
 
         ReminderWorker.schedule(this)
 
         setContent {
             LyricMotionTheme {
-                LyricMotionApp()
+                LyricMotionApp(initialSongId = pendingSongId)
+            }
+        }
+    }
+
+    // Cuando la activity ya existe (singleTop) y se re-abre desde notificación
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingSongId = intent.getStringExtra(LyricsService.EXTRA_SONG_ID)
+        // Re-lanza el contenido para que LyricMotionApp reciba el nuevo id
+        setContent {
+            LyricMotionTheme {
+                LyricMotionApp(initialSongId = pendingSongId)
             }
         }
     }
@@ -95,20 +113,19 @@ class MainActivity : ComponentActivity() {
 // ================================================================
 
 @Composable
-fun LyricMotionApp() {
+fun LyricMotionApp(initialSongId: String? = null) {
     val navController   = rememberNavController()
     val context         = LocalContext.current
     val userManager     = remember { UserManager(context) }
     val settingsManager = remember { SettingsManager(context) }
     val loggedEmail     by userManager.loggedUserEmail.collectAsState(initial = "")
+    val isLoggedIn      by userManager.isLoggedIn.collectAsState(initial = false)
 
-    // Ajustes por usuario
     val settings by remember(loggedEmail) {
         if (loggedEmail.isNotEmpty()) settingsManager.getSettingsForUser(loggedEmail)
         else flowOf(AppSettings())
     }.collectAsState(initial = AppSettings())
 
-    // Canciones guardadas por usuario
     val savedSongIds by remember(loggedEmail) {
         if (loggedEmail.isNotEmpty()) userManager.getSavedSongIds(loggedEmail)
         else flowOf(emptyList())
@@ -116,11 +133,29 @@ fun LyricMotionApp() {
 
     val scope = rememberCoroutineScope()
 
+    // Deep-link desde notificación: navega a la canción cuando la sesión esté lista
+    LaunchedEffect(initialSongId, isLoggedIn) {
+        if (!initialSongId.isNullOrEmpty() && isLoggedIn) {
+            navController.navigate(Screen.LyricsViewer.createRoute(initialSongId)) {
+                popUpTo(Screen.Home.route) { inclusive = false }
+                launchSingleTop = true
+            }
+        }
+    }
+
     NavHost(
         navController    = navController,
         startDestination = Screen.Welcome.route
     ) {
         composable(Screen.Welcome.route) {
+            // Si ya hay sesión activa, saltar directo a Home
+            LaunchedEffect(isLoggedIn) {
+                if (isLoggedIn) {
+                    navController.navigate(Screen.Home.route) {
+                        popUpTo(Screen.Welcome.route) { inclusive = true }
+                    }
+                }
+            }
             WelcomeScreen(
                 onComenzarClick = { navController.navigate(Screen.Login.route) },
                 onYaTengoClick  = { navController.navigate(Screen.Register.route) }
@@ -161,7 +196,7 @@ fun LyricMotionApp() {
             val isSaved = savedSongIds.contains(song.id)
 
             DisposableEffect(song) {
-                LyricsService.startService(context, song.title, song.artist, song.lyrics)
+                LyricsService.startService(context, song.id, song.title, song.artist, song.lyrics)
                 onDispose { LyricsService.stopService(context) }
             }
 
@@ -338,13 +373,18 @@ fun SongCard(
 
 @Composable
 fun WelcomeScreen(onComenzarClick: () -> Unit = {}, onYaTengoClick: () -> Unit = {}) {
-    Box(Modifier.fillMaxSize().background(LMBackground)) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(LMBackground)
+            .windowInsetsPadding(WindowInsets.systemBars)  // ← FIX status bar
+    ) {
         Column(
             Modifier.fillMaxSize().padding(horizontal = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Spacer(Modifier.height(80.dp))
+            Spacer(Modifier.height(48.dp))
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -362,7 +402,7 @@ fun WelcomeScreen(onComenzarClick: () -> Unit = {}, onYaTengoClick: () -> Unit =
                 )
             }
             Column(
-                Modifier.fillMaxWidth().padding(bottom = 48.dp),
+                Modifier.fillMaxWidth().padding(bottom = 36.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Button(
@@ -378,7 +418,7 @@ fun WelcomeScreen(onComenzarClick: () -> Unit = {}, onYaTengoClick: () -> Unit =
                     colors   = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = LMPrimary),
                     border   = androidx.compose.foundation.BorderStroke(1.5.dp, LMPrimary),
                     shape    = RoundedCornerShape(8.dp)
-                ) { Text("YA TENGO CUENTA", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
+                ) { Text("NO TENGO CUENTA", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
             }
         }
     }
@@ -409,12 +449,17 @@ fun LoginScreen(navController: NavController? = null, userManager: UserManager? 
         focusedContainerColor   = LMSurface, unfocusedContainerColor   = LMSurface
     )
 
-    Box(Modifier.fillMaxSize().background(LMBackground)) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(LMBackground)
+            .windowInsetsPadding(WindowInsets.systemBars)  // ← FIX
+    ) {
         Column(
             Modifier.fillMaxSize().padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Spacer(Modifier.height(72.dp))
+            Spacer(Modifier.height(48.dp))
             AppLogo()
             Spacer(Modifier.height(20.dp))
             Text("Bienvenido", style = MaterialTheme.typography.headlineLarge, color = LMOnBackground, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
@@ -474,7 +519,7 @@ fun LoginScreen(navController: NavController? = null, userManager: UserManager? 
 
             Spacer(Modifier.weight(1f))
             Row(
-                Modifier.fillMaxWidth().padding(bottom = 40.dp),
+                Modifier.fillMaxWidth().padding(bottom = 24.dp),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment     = Alignment.CenterVertically
             ) {
@@ -501,9 +546,7 @@ fun RegisterScreen(navController: NavController? = null, userManager: UserManage
     var name     by remember { mutableStateOf("") }
     var email    by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var confirm  by remember { mutableStateOf("") }
     var passVis  by remember { mutableStateOf(false) }
-    var confVis  by remember { mutableStateOf(false) }
     var errorMsg by remember { mutableStateOf("") }
     var loading  by remember { mutableStateOf(false) }
 
@@ -515,64 +558,72 @@ fun RegisterScreen(navController: NavController? = null, userManager: UserManage
         focusedContainerColor   = LMSurface, unfocusedContainerColor   = LMSurface
     )
 
-    Box(Modifier.fillMaxSize().background(LMBackground)) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(LMBackground)
+            .windowInsetsPadding(WindowInsets.systemBars)  // ← FIX
+    ) {
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Spacer(Modifier.height(72.dp))
+            Spacer(Modifier.height(48.dp))
             AppLogo()
-            Spacer(Modifier.height(20.dp))
-            Text("Crear Cuenta", style = MaterialTheme.typography.headlineLarge, color = LMOnBackground, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(16.dp))
+            Text("Crear cuenta", style = MaterialTheme.typography.headlineLarge, color = LMOnBackground, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(4.dp))
-            Text("Crea tu cuenta para comenzar", style = MaterialTheme.typography.bodyMedium, color = LMOnSurfaceVariant, textAlign = TextAlign.Center)
-            Spacer(Modifier.height(28.dp))
+            Text("Regístrate para comenzar", style = MaterialTheme.typography.bodyMedium, color = LMOnSurfaceVariant)
+            Spacer(Modifier.height(32.dp))
 
-            OutlinedTextField(name, { name = it; errorMsg = "" }, label = { Text("NOMBRE") },
+            OutlinedTextField(
+                name, { name = it; errorMsg = "" },
+                label       = { Text("NOMBRE") },
                 leadingIcon = { Icon(Icons.Default.Person, null, tint = LMOnSurfaceVariant) },
-                singleLine  = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = tfColors)
-            Spacer(Modifier.height(12.dp))
-            OutlinedTextField(email, { email = it; errorMsg = "" }, label = { Text("EMAIL") },
-                leadingIcon     = { Icon(Icons.Default.Email, null, tint = LMOnSurfaceVariant) },
+                singleLine  = true, modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp), colors = tfColors
+            )
+            Spacer(Modifier.height(16.dp))
+            OutlinedTextField(
+                email, { email = it; errorMsg = "" },
+                label       = { Text("EMAIL") },
+                leadingIcon = { Icon(Icons.Default.Email, null, tint = LMOnSurfaceVariant) },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                singleLine  = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = tfColors)
-            Spacer(Modifier.height(12.dp))
-            OutlinedTextField(password, { password = it; errorMsg = "" }, label = { Text("CONTRASEÑA") },
+                singleLine  = true, modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp), colors = tfColors
+            )
+            Spacer(Modifier.height(16.dp))
+            OutlinedTextField(
+                password, { password = it; errorMsg = "" },
+                label        = { Text("CONTRASEÑA") },
                 leadingIcon  = { Icon(Icons.Default.Lock, null, tint = LMOnSurfaceVariant) },
-                trailingIcon = { IconButton({ passVis = !passVis }) { Icon(if (passVis) Icons.Default.VisibilityOff else Icons.Default.Visibility, null, tint = LMOnSurfaceVariant) } },
+                trailingIcon = {
+                    IconButton({ passVis = !passVis }) {
+                        Icon(if (passVis) Icons.Default.VisibilityOff else Icons.Default.Visibility, null, tint = LMOnSurfaceVariant)
+                    }
+                },
                 visualTransformation = if (passVis) VisualTransformation.None else PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                singleLine  = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = tfColors)
-            Spacer(Modifier.height(12.dp))
-            OutlinedTextField(confirm, { confirm = it; errorMsg = "" }, label = { Text("CONFIRMAR CONTRASEÑA") },
-                leadingIcon  = { Icon(Icons.Default.Lock, null, tint = LMOnSurfaceVariant) },
-                trailingIcon = { IconButton({ confVis = !confVis }) { Icon(if (confVis) Icons.Default.VisibilityOff else Icons.Default.Visibility, null, tint = LMOnSurfaceVariant) } },
-                visualTransformation = if (confVis) VisualTransformation.None else PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                singleLine  = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = tfColors)
+                singleLine  = true, modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp), colors = tfColors
+            )
 
             if (errorMsg.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
-                Text(errorMsg, style = MaterialTheme.typography.bodySmall, color = LMError, textAlign = TextAlign.Center)
+                Text(errorMsg, style = MaterialTheme.typography.bodySmall, color = LMError)
             }
-            Spacer(Modifier.height(28.dp))
 
+            Spacer(Modifier.height(32.dp))
             Button(
                 onClick = {
-                    when {
-                        name.isBlank() || email.isBlank() || password.isBlank() -> errorMsg = "Completa todos los campos"
-                        password != confirm -> errorMsg = "Las contraseñas no coinciden"
-                        password.length < 6 -> errorMsg = "Mínimo 6 caracteres"
-                        else -> scope.launch {
-                            loading = true
-                            val newUser = User(UUID.randomUUID().toString(), name.trim(), email.trim().lowercase(), password)
-                            val ok = um.registerUser(users, newUser)
-                            if (ok) {
-                                um.loginUser(users + newUser, newUser.email, newUser.password)
-                                loading = false
-                                navController?.navigate(Screen.Home.route) { popUpTo(Screen.Welcome.route) { inclusive = true } }
-                            } else { loading = false; errorMsg = "Este correo ya está registrado" }
-                        }
+                    if (name.isBlank() || email.isBlank() || password.isBlank()) { errorMsg = "Completa todos los campos"; return@Button }
+                    if (password.length < 6) { errorMsg = "La contraseña debe tener al menos 6 caracteres"; return@Button }
+                    scope.launch {
+                        loading = true
+                        val ok = um.registerUser(users, User(UUID.randomUUID().toString(), name.trim(), email.trim(), password))
+                        loading = false
+                        if (ok) navController?.navigate(Screen.Login.route) { popUpTo(Screen.Register.route) { inclusive = true } }
+                        else errorMsg = "El correo ya está registrado"
                     }
                 },
                 modifier = Modifier.fillMaxWidth().height(52.dp), enabled = !loading,
@@ -580,12 +631,11 @@ fun RegisterScreen(navController: NavController? = null, userManager: UserManage
                 shape    = RoundedCornerShape(8.dp)
             ) {
                 if (loading) CircularProgressIndicator(color = LMOnPrimary, modifier = Modifier.size(20.dp))
-                else Text("CREAR CUENTA", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+                else Text("REGISTRARME", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
             }
-
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(24.dp))
             Row(
-                Modifier.fillMaxWidth().padding(bottom = 40.dp),
+                Modifier.fillMaxWidth().padding(bottom = 24.dp),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment     = Alignment.CenterVertically
             ) {
@@ -602,6 +652,7 @@ fun RegisterScreen(navController: NavController? = null, userManager: UserManage
 //  HOME SCREEN
 // ================================================================
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(navController: NavController? = null) {
     var searchQuery   by remember { mutableStateOf("") }
@@ -611,14 +662,19 @@ fun HomeScreen(navController: NavController? = null) {
     Scaffold(
         containerColor = LMBackground,
         topBar = {
-            Box(Modifier.fillMaxWidth().background(LMBackground).padding(horizontal = 16.dp, vertical = 12.dp)) {
-                Text("LyricMotion", style = MaterialTheme.typography.headlineMedium, color = LMOnBackground, fontWeight = FontWeight.Bold)
-            }
+            // WindowInsets para status bar
+            TopAppBar(
+                title = {
+                    Text("LyricMotion", style = MaterialTheme.typography.headlineMedium,
+                        color = LMOnBackground, fontWeight = FontWeight.Bold)
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = LMBackground)
+            )
         },
         bottomBar = { navController?.let { LMBottomNav(it) } }
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)) {
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(4.dp))
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { q ->
@@ -652,26 +708,19 @@ fun HomeScreen(navController: NavController? = null) {
                 SearchState.IDLE -> {
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         item {
-                            Text(
-                                "🔥 Destacadas",
-                                style      = MaterialTheme.typography.titleMedium,
-                                color      = LMOnBackground,
-                                fontWeight = FontWeight.Bold,
-                                modifier   = Modifier.padding(bottom = 4.dp)
-                            )
+                            Text("Destacadas", style = MaterialTheme.typography.titleMedium,
+                                color = LMOnBackground, fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(bottom = 4.dp))
                         }
                         items(featuredSongs) { song ->
                             SongCard(song, onClick = { navController?.navigate(Screen.LyricsViewer.createRoute(song.id)) })
                         }
                         item {
                             Spacer(Modifier.height(16.dp))
-                            Text(
-                                "Busca más canciones arriba ↑",
-                                style     = MaterialTheme.typography.bodySmall,
-                                color     = LMOnSurfaceVariant.copy(alpha = 0.6f),
-                                modifier  = Modifier.fillMaxWidth(),
-                                textAlign = TextAlign.Center
-                            )
+                            Text("Busca más canciones arriba ↑",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = LMOnSurfaceVariant.copy(alpha = 0.6f),
+                                modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
                         }
                     }
                 }
@@ -702,9 +751,152 @@ fun HomeScreen(navController: NavController? = null) {
 }
 
 // ================================================================
+//  ANIMATED LYRICS PLAYER — reproductor de letras animado
+// ================================================================
+
+@Composable
+fun AnimatedLyricsPlayer(
+    lyrics:      String,
+    fontSize:    Float,
+    color:       Color,
+    fontFamily:  FontFamily,
+    fontStyle:   FontStyle,
+    animSpeed:   Float,
+    autoPlay:    Boolean,
+    modifier:    Modifier = Modifier
+) {
+    val lines = remember(lyrics) {
+        lyrics.split("\n").filter { it.isNotBlank() }
+    }
+
+    var currentLine   by remember { mutableIntStateOf(0) }
+    var isPlaying     by remember { mutableStateOf(autoPlay) }
+    val lineAlpha     = remember { Animatable(1f) }
+    val lineOffsetY   = remember { Animatable(0f) }
+
+    val lineDurationMs = remember(animSpeed) { (3000 / animSpeed).toLong().coerceAtLeast(800L) }
+    val fadeDurationMs = remember(animSpeed) { (300 / animSpeed).toLong().coerceAtLeast(100L) }
+
+    LaunchedEffect(isPlaying, lines, animSpeed) {
+        if (!isPlaying || lines.isEmpty()) return@LaunchedEffect
+        while (isPlaying) {
+            delay(lineDurationMs)
+            launch { lineAlpha.animateTo(0f, tween(fadeDurationMs.toInt())) }
+            lineOffsetY.animateTo(-30f, tween(fadeDurationMs.toInt()))
+            currentLine = (currentLine + 1) % lines.size
+            lineOffsetY.snapTo(30f)
+            launch { lineAlpha.animateTo(1f, tween(fadeDurationMs.toInt())) }
+            lineOffsetY.animateTo(0f, tween(fadeDurationMs.toInt()))
+        }
+    }
+
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            contentAlignment = Alignment.Center
+        ) {
+            if (lines.isNotEmpty()) {
+                Text(
+                    text      = lines[currentLine],
+                    style     = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize   = (fontSize * 1.4f).sp,
+                        lineHeight = (fontSize * 2f).sp,
+                        fontFamily = fontFamily,
+                        fontStyle  = fontStyle
+                    ),
+                    color     = color.copy(alpha = lineAlpha.value),
+                    textAlign = TextAlign.Center,
+                    modifier  = Modifier
+                        .padding(horizontal = 24.dp)
+                        .offset(y = lineOffsetY.value.dp)
+                )
+            }
+        }
+
+        // Puntos de progreso
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment     = Alignment.CenterVertically
+        ) {
+            val visibleCount = minOf(lines.size, 7)
+            val halfVis      = visibleCount / 2
+            val start        = (currentLine - halfVis).coerceAtLeast(0)
+            val end          = (start + visibleCount).coerceAtMost(lines.size)
+
+            (start until end).forEach { i ->
+                val isActive = i == currentLine
+                Box(
+                    Modifier
+                        .padding(horizontal = 3.dp)
+                        .size(if (isActive) 10.dp else 6.dp)
+                        .clip(CircleShape)
+                        .background(color.copy(alpha = if (isActive) 1f else 0.35f))
+                )
+            }
+        }
+
+        // Líneas de contexto (anterior y siguiente)
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            val prevLine = if (currentLine > 0) lines[currentLine - 1] else ""
+            val nextLine = if (currentLine < lines.size - 1) lines[currentLine + 1] else ""
+            if (prevLine.isNotEmpty()) {
+                Text(prevLine, fontSize = (fontSize * 0.85f).sp, color = color.copy(alpha = 0.35f),
+                    fontFamily = fontFamily, textAlign = TextAlign.Center,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Spacer(Modifier.height(4.dp))
+            if (nextLine.isNotEmpty()) {
+                Text(nextLine, fontSize = (fontSize * 0.85f).sp, color = color.copy(alpha = 0.35f),
+                    fontFamily = fontFamily, textAlign = TextAlign.Center,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+
+        // Controles
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment     = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = {
+                currentLine = if (currentLine > 0) currentLine - 1 else lines.size - 1
+            }) {
+                Icon(Icons.Default.SkipPrevious, "Anterior", tint = color, modifier = Modifier.size(32.dp))
+            }
+            FloatingActionButton(
+                onClick        = { isPlaying = !isPlaying },
+                containerColor = color.copy(alpha = 0.2f),
+                contentColor   = color,
+                modifier       = Modifier.size(52.dp)
+            ) {
+                Icon(
+                    if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    if (isPlaying) "Pausar" else "Reproducir",
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+            IconButton(onClick = {
+                currentLine = if (currentLine < lines.size - 1) currentLine + 1 else 0
+            }) {
+                Icon(Icons.Default.SkipNext, "Siguiente", tint = color, modifier = Modifier.size(32.dp))
+            }
+        }
+    }
+}
+
+// ================================================================
 //  LYRICS VIEWER SCREEN
 // ================================================================
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LyricsViewerScreen(
     song: SongItem           = sampleSongs[0],
@@ -721,23 +913,37 @@ fun LyricsViewerScreen(
     val bgColor     = when (style) { LyricStyle.NEON -> NeonBackground; LyricStyle.KARAOKE -> KaraokeBackground; LyricStyle.FADE -> FadeBackground }
     val lyricsColor = when (style) { LyricStyle.NEON -> NeonPrimary;    LyricStyle.KARAOKE -> KaraokeText;       LyricStyle.FADE -> FadeText }
     val animDuration = (500 / settings.animationSpeed).toInt().coerceAtLeast(100)
+    val isKaraoke    = style == LyricStyle.KARAOKE
 
     Scaffold(
         containerColor = bgColor,
         topBar = {
-            Row(
-                Modifier.fillMaxWidth().background(bgColor).padding(horizontal = 8.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onBackClick) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = LMOnBackground) }
-                Column(Modifier.weight(1f)) {
-                    Text(song.title,  style = MaterialTheme.typography.titleLarge, color = LMOnBackground, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(song.artist, style = MaterialTheme.typography.bodySmall,  color = LMOnSurfaceVariant)
-                }
-            }
+            // TopAppBar respeta WindowInsets automáticamente
+            TopAppBar(
+                navigationIcon = {
+                    IconButton(onBackClick) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = LMOnBackground)
+                    }
+                },
+                title = {
+                    Column {
+                        Text(song.title, style = MaterialTheme.typography.titleLarge,
+                            color = LMOnBackground, fontWeight = FontWeight.Bold,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(song.artist, style = MaterialTheme.typography.bodySmall, color = LMOnSurfaceVariant)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = bgColor)
+            )
         },
         bottomBar = {
-            Column(Modifier.fillMaxWidth().background(bgColor).padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .background(bgColor)
+                    .navigationBarsPadding()   // ← respeta barra de navegación
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+            ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     LyricStyle.entries.forEach { s ->
                         val sel = style == s
@@ -763,10 +969,11 @@ fun LyricsViewerScreen(
         }
     ) { padding ->
         Column(
-            Modifier.fillMaxSize().padding(padding).padding(horizontal = 24.dp, vertical = 16.dp),
+            Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Card(modifier = Modifier.size(180.dp), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(8.dp)) {
+            // Portada
+            Card(modifier = Modifier.size(160.dp), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(8.dp)) {
                 AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current)
                         .data("https://picsum.photos/seed/${song.id}/400/400").crossfade(true).build(),
@@ -774,8 +981,9 @@ fun LyricsViewerScreen(
                     modifier = Modifier.fillMaxSize()
                 )
             }
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(16.dp))
 
+            // Área de letras — karaoke animado o texto estático
             AnimatedContent(
                 targetState  = style,
                 transitionSpec = {
@@ -789,23 +997,16 @@ fun LyricsViewerScreen(
                 modifier = Modifier.weight(1f),
                 label    = "lyrics_style_anim"
             ) { currentStyle ->
-                Column(
-                    modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text  = song.lyrics,
-                        style = MaterialTheme.typography.bodyLarge.copy(
-                            fontSize   = settings.fontSize.sp,
-                            lineHeight = (settings.fontSize * 1.7f).sp,
-                            fontFamily = lyricFontFamily(currentStyle),
-                            fontStyle  = if (currentStyle == LyricStyle.FADE) FontStyle.Italic else FontStyle.Normal
-                        ),
-                        color     = lyricsColor,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(Modifier.height(40.dp))
-                }
+                AnimatedLyricsPlayer(
+                    lyrics     = song.lyrics,
+                    fontSize   = settings.fontSize,
+                    color      = lyricsColor,
+                    fontFamily = lyricFontFamily(currentStyle),
+                    fontStyle  = if (currentStyle == LyricStyle.FADE) FontStyle.Italic else FontStyle.Normal,
+                    animSpeed  = settings.animationSpeed,
+                    autoPlay   = settings.autoPlay,
+                    modifier   = Modifier.fillMaxSize()
+                )
             }
         }
     }
@@ -815,6 +1016,7 @@ fun LyricsViewerScreen(
 //  SAVED SCREEN
 // ================================================================
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SavedScreen(
     navController: NavController? = null,
@@ -824,9 +1026,10 @@ fun SavedScreen(
     Scaffold(
         containerColor = LMBackground,
         topBar = {
-            Box(Modifier.fillMaxWidth().background(LMBackground).padding(horizontal = 16.dp, vertical = 16.dp)) {
-                Text("Letras Guardadas", style = MaterialTheme.typography.headlineMedium, color = LMOnBackground, fontWeight = FontWeight.Bold)
-            }
+            TopAppBar(
+                title = { Text("Letras Guardadas", style = MaterialTheme.typography.headlineMedium, color = LMOnBackground, fontWeight = FontWeight.Bold) },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = LMBackground)
+            )
         },
         bottomBar = { navController?.let { LMBottomNav(it) } }
     ) { padding ->
@@ -876,6 +1079,7 @@ fun SavedScreen(
 //  SETTINGS SCREEN
 // ================================================================
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     navController: NavController? = null,
@@ -887,7 +1091,6 @@ fun SettingsScreen(
     val um       = userManager ?: remember { UserManager(context) }
     val scope    = rememberCoroutineScope()
 
-    // Ajustes cargados por usuario
     val settings by remember(userEmail) {
         if (userEmail.isNotEmpty()) sm.getSettingsForUser(userEmail)
         else flowOf(AppSettings())
@@ -900,7 +1103,6 @@ fun SettingsScreen(
     var showAbout by remember { mutableStateOf(false) }
 
     val styles = listOf("Fade", "Neón", "Karaoke")
-
     val previewStyle = when (selStyle) { 1 -> LyricStyle.NEON; 2 -> LyricStyle.KARAOKE; else -> LyricStyle.FADE }
     val previewColor = when (previewStyle) { LyricStyle.NEON -> NeonPrimary; LyricStyle.KARAOKE -> KaraokeText; LyricStyle.FADE -> FadeText }
     val previewBg    = when (previewStyle) { LyricStyle.NEON -> NeonBackground; LyricStyle.KARAOKE -> KaraokeBackground; LyricStyle.FADE -> FadeBackground }
@@ -917,13 +1119,16 @@ fun SettingsScreen(
     Scaffold(
         containerColor = LMBackground,
         topBar = {
-            Box(Modifier.fillMaxWidth().background(LMBackground).padding(horizontal = 16.dp, vertical = 16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Settings, null, tint = LMPrimary, modifier = Modifier.size(24.dp))
-                    Spacer(Modifier.width(10.dp))
-                    Text("Ajustes", style = MaterialTheme.typography.headlineMedium, color = LMOnBackground, fontWeight = FontWeight.Bold)
-                }
-            }
+            TopAppBar(
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Settings, null, tint = LMPrimary, modifier = Modifier.size(24.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Text("Ajustes", style = MaterialTheme.typography.headlineMedium, color = LMOnBackground, fontWeight = FontWeight.Bold)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = LMBackground)
+            )
         },
         bottomBar = { navController?.let { LMBottomNav(it) } }
     ) { padding ->
@@ -932,7 +1137,6 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding      = PaddingValues(top = 8.dp, bottom = 24.dp)
         ) {
-
             item {
                 Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = LMPrimary), shape = RoundedCornerShape(16.dp)) {
                     Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -958,11 +1162,10 @@ fun SettingsScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             styles.forEachIndexed { i, label ->
                                 val sel = selStyle == i
-                                FilterChip(
-                                    sel, {
-                                        selStyle = i
-                                        scope.launch { sm.saveDefaultStyle(userEmail, i) }
-                                    },
+                                FilterChip(sel, {
+                                    selStyle = i
+                                    scope.launch { sm.saveDefaultStyle(userEmail, i) }
+                                },
                                     label  = { Text(label, fontSize = 12.sp) },
                                     colors = FilterChipDefaults.filterChipColors(selectedContainerColor = LMPrimary, selectedLabelColor = LMOnPrimary, containerColor = LMSurfaceVariant, labelColor = LMOnSurfaceVariant),
                                     border = FilterChipDefaults.filterChipBorder(enabled = true, selected = sel, selectedBorderColor = LMPrimary, borderColor = LMSurfaceVariant),
@@ -999,11 +1202,9 @@ fun SettingsScreen(
                             Spacer(Modifier.weight(1f))
                             Text("${fontSize.toInt()}sp", style = MaterialTheme.typography.bodyMedium, color = LMPrimary, fontWeight = FontWeight.Bold)
                         }
-                        Slider(
-                            fontSize, { fontSize = it; scope.launch { sm.saveFontSize(userEmail, it) } },
+                        Slider(fontSize, { fontSize = it; scope.launch { sm.saveFontSize(userEmail, it) } },
                             valueRange = 12f..28f, steps = 7,
-                            colors     = SliderDefaults.colors(thumbColor = LMPrimary, activeTrackColor = LMPrimary, inactiveTrackColor = LMSurfaceVariant)
-                        )
+                            colors     = SliderDefaults.colors(thumbColor = LMPrimary, activeTrackColor = LMPrimary, inactiveTrackColor = LMSurfaceVariant))
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text("12sp", style = MaterialTheme.typography.labelSmall, color = LMOnSurfaceVariant)
                             Text("28sp", style = MaterialTheme.typography.labelSmall, color = LMOnSurfaceVariant)
@@ -1024,11 +1225,9 @@ fun SettingsScreen(
                             Spacer(Modifier.weight(1f))
                             Text(String.format(Locale.getDefault(), "%.1f x", animSpeed), style = MaterialTheme.typography.bodyMedium, color = LMPrimary, fontWeight = FontWeight.Bold)
                         }
-                        Slider(
-                            animSpeed, { animSpeed = it; scope.launch { sm.saveAnimationSpeed(userEmail, it) } },
+                        Slider(animSpeed, { animSpeed = it; scope.launch { sm.saveAnimationSpeed(userEmail, it) } },
                             valueRange = 0.5f..2f, steps = 5,
-                            colors     = SliderDefaults.colors(thumbColor = LMPrimary, activeTrackColor = LMPrimary, inactiveTrackColor = LMSurfaceVariant)
-                        )
+                            colors     = SliderDefaults.colors(thumbColor = LMPrimary, activeTrackColor = LMPrimary, inactiveTrackColor = LMSurfaceVariant))
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text("Lento",  style = MaterialTheme.typography.labelSmall, color = LMOnSurfaceVariant)
                             Text("Rápido", style = MaterialTheme.typography.labelSmall, color = LMOnSurfaceVariant)
@@ -1046,10 +1245,8 @@ fun SettingsScreen(
                             Text("Reproducción automática", style = MaterialTheme.typography.titleMedium, color = LMOnBackground)
                             Text("Inicia los efectos al abrir una canción", style = MaterialTheme.typography.bodySmall, color = LMOnSurfaceVariant)
                         }
-                        Switch(
-                            autoPlay, { autoPlay = it; scope.launch { sm.saveAutoPlay(userEmail, it) } },
-                            colors = SwitchDefaults.colors(checkedThumbColor = LMOnPrimary, checkedTrackColor = LMPrimary, uncheckedThumbColor = LMOnSurfaceVariant, uncheckedTrackColor = LMSurfaceVariant)
-                        )
+                        Switch(autoPlay, { autoPlay = it; scope.launch { sm.saveAutoPlay(userEmail, it) } },
+                            colors = SwitchDefaults.colors(checkedThumbColor = LMOnPrimary, checkedTrackColor = LMPrimary, uncheckedThumbColor = LMOnSurfaceVariant, uncheckedTrackColor = LMSurfaceVariant))
                     }
                 }
             }
@@ -1077,10 +1274,7 @@ fun SettingsScreen(
             item {
                 SettCard {
                     Column {
-                        Row(
-                            Modifier.fillMaxWidth().padding(vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Info, null, tint = LMOnSurfaceVariant, modifier = Modifier.size(20.dp))
                             Spacer(Modifier.width(12.dp))
                             Text("Acerca de LyricMotion", style = MaterialTheme.typography.bodyMedium, color = LMOnBackground, modifier = Modifier.weight(1f))
@@ -1104,7 +1298,8 @@ fun SettingsScreen(
 // ================================================================
 
 @Composable private fun SectionHeader(title: String) {
-    Text(title.uppercase(), style = MaterialTheme.typography.labelMedium, color = LMPrimary, letterSpacing = 1.5.sp, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
+    Text(title.uppercase(), style = MaterialTheme.typography.labelMedium, color = LMPrimary,
+        letterSpacing = 1.5.sp, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
 }
 
 @Composable private fun SettCard(content: @Composable () -> Unit) {
