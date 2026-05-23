@@ -6,17 +6,11 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.lyricmotion.data.AppSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 val Context.settingsDataStore by preferencesDataStore(name = "lyricmotion_settings")
-
-data class AppSettings(
-    val defaultStyleIndex: Int     = 0,
-    val fontSize:          Float   = 16f,
-    val animationSpeed:    Float   = 1f,
-    val autoPlay:          Boolean = true
-)
 
 class SettingsManager(private val context: Context) {
 
